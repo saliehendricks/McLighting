@@ -1,4 +1,4 @@
-# McLighting v2 - The ESP8266 based multi-client lighting gadget
+# McLighting v2 - The ESP8266 & ESP32 based multi-client lighting gadget
 
 [![Gitter](https://badges.gitter.im/mclighting/Lobby.svg)](https://gitter.im/mclighting/Lobby?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 
