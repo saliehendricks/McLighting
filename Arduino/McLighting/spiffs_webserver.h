@@ -128,31 +128,111 @@ void handleFileCreate() {
 	path = String();
 }
 
-void handleFileList() {
-	if (!server.hasArg("dir")) {
-		server.send(500, "text/plain", "BAD ARGS");
-		return;
-	}
-	
-	String path = server.arg("dir");
-	DBG_OUTPUT_PORT.println("handleFileList: " + path);
-	Dir dir = SPIFFS.openDir(path);
-	path = String();
-	
-	String output = "[";
-	while (dir.next()) {
-		File entry = dir.openFile("r");
-		if (output != "[") output += ',';
-		bool isDir = false;
-		output += "{\"type\":\"";
-		output += (isDir) ? "dir" : "file";
-		output += "\",\"name\":\"";
-		output += String(entry.name()).substring(1);
-		output += "\"}";
-		entry.close();
-	}
-	
-	output += "]";
-	server.send(200, "text/json", output);
+void returnFail(String msg) {
+  server.send(500, "text/plain", msg + "\r\n");
 }
+
+
+#ifdef ESP8266
+void handleFileList() {
+  if(!server.hasArg("dir")) {
+    returnFail("BAD ARGS");
+    return;
+  }
+  
+  String path = server.arg("dir");
+  DBG_OUTPUT_PORT.println("handleFileList: " + path);
+  Dir dir = SPIFFS.openDir(path);
+  path = String();
+
+  String output = "[";
+  while(dir.next()){
+    File entry = dir.openFile("r");
+    if (output != "[") output += ',';
+    bool isDir = false;
+    output += "{\"type\":\"";
+    output += (isDir)?"dir":"file";
+    output += "\",\"name\":\"";
+    output += String(entry.name()).substring(1);
+    output += "\"}";
+    entry.close();
+  }
+  
+  output += "]";
+  server.send(200, "text/json", output);
+}
+#else
+void handleFileList() {
+  if(!server.hasArg("dir")) {
+    returnFail("BAD ARGS");
+    return;
+  }
+  String path = server.arg("dir");
+  if(path != "/" && !SPIFFS.exists((char *)path.c_str())) {
+    returnFail("BAD PATH");
+    return;
+  }
+  File dir = SPIFFS.open((char *)path.c_str());
+  path = String();
+  if(!dir.isDirectory()){
+    dir.close();
+    returnFail("NOT DIR");
+    return;
+  }
+  dir.rewindDirectory();
+
+  String output = "[";
+  for (int cnt = 0; true; ++cnt) {
+    File entry = dir.openNextFile();
+    if (!entry)
+    break;
+
+    if (cnt > 0)
+      output += ',';
+
+    output += "{\"type\":\"";
+    output += (entry.isDirectory()) ? "dir" : "file";
+    output += "\",\"name\":\"";
+    // Ignore '/' prefix
+    output += entry.name()+1;
+    output += "\"";
+    output += "}";
+    entry.close();
+  }
+  output += "]";
+  server.send(200, "text/json", output);
+  dir.close();
+}
+
+void listDir(fs::FS &fs, const char * dirname, uint8_t levels) {
+  DBG_OUTPUT_PORT.printf("Listing directory: %s\n", dirname);
+
+  File root = fs.open(dirname);
+  if (!root) {
+    DBG_OUTPUT_PORT.println("Failed to open directory");
+    return;
+  }
+  if (!root.isDirectory()) {
+    DBG_OUTPUT_PORT.println("Not a directory");
+    return;
+  }
+
+  File file = root.openNextFile();
+  while (file) {
+    if (file.isDirectory()) {
+      DBG_OUTPUT_PORT.print("  DIR : ");
+      DBG_OUTPUT_PORT.println(file.name());
+      if (levels) {
+        listDir(fs, file.name(), levels - 1);
+      }
+    } else {
+      DBG_OUTPUT_PORT.print("  FILE: ");
+      DBG_OUTPUT_PORT.print(file.name());
+      DBG_OUTPUT_PORT.print("  SIZE: ");
+      DBG_OUTPUT_PORT.println(file.size());
+    }
+    file = root.openNextFile();
+  }
+}
+#endif
 

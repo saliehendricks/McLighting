@@ -1,18 +1,22 @@
+#include <Adafruit_NeoPixel.h>
 #include "definitions.h"
+//#include "Encoder.h"
 
 // ***************************************************************************
 // Load libraries for: WebServer / WiFiManager / WebSockets
 // ***************************************************************************
-#include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
+#include <WiFi.h>          //https://github.com/esp8266/Arduino
 
 // needed for library WiFiManager
 #include <DNSServer.h>
-#include <ESP8266WebServer.h>
-#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
+#include <ESPmDNS.h>
+#include <WebServer.h>
+#include "WiFiManager.h"          //https://github.com/tzapu/WiFiManager
 
 #include <WiFiClient.h>
-#include <ESP8266mDNS.h>
+#include <DNSServer.h>
 #include <FS.h>
+#include <SPIFFS.h>
 #include <EEPROM.h>
 
 #include <WebSockets.h>           //https://github.com/Links2004/arduinoWebSockets
@@ -20,23 +24,34 @@
 
 // OTA
 #ifdef ENABLE_OTA
-  #include <WiFiUdp.h>
-  #include <ArduinoOTA.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 #endif
 
 // MQTT
 #ifdef ENABLE_MQTT
-  #include <PubSubClient.h>
+#include <PubSubClient.h>
 
-  WiFiClient espClient;
-  PubSubClient mqtt_client(espClient);
+WiFiClient espClient;
+PubSubClient mqtt_client(espClient);
 #endif
 
+int BUILTIN_LED = 5;
+
+// ***************************************************************************
+// Encoder
+// ***************************************************************************
+//Encoder myEnc(D1, D2);
 
 // ***************************************************************************
 // Instanciate HTTP(80) / WebSockets(81) Server
 // ***************************************************************************
+#if defined(ESP8266)
 ESP8266WebServer server(80);
+#else
+WebServer server(80);
+#endif
+
 WebSocketsServer webSocket = WebSocketsServer(81);
 
 
@@ -85,9 +100,9 @@ String readEEPROM(int offset, int len) {
     res += char(EEPROM.read(i + offset));
     //DBG_OUTPUT_PORT.println(char(EEPROM.read(i + offset)));
   }
-  
+
   //DBG_OUTPUT_PORT.print("Read EEPROM: [");
-  //DBG_OUTPUT_PORT.print(res); 
+  //DBG_OUTPUT_PORT.print(res);
   //DBG_OUTPUT_PORT.println("]");
   return res;
 }
@@ -100,9 +115,9 @@ void writeEEPROM(int offset, int len, String value) {
     } else {
       EEPROM.write(i + offset, NULL);
     }
-    
+
     DBG_OUTPUT_PORT.print("Wrote EEPROM: ");
-    DBG_OUTPUT_PORT.println(value[i]); 
+    DBG_OUTPUT_PORT.println(value[i]);
   }
 }
 
@@ -149,11 +164,79 @@ void saveConfigCallback () {
 
 
 
+#ifdef ENABLED_ENCODER
+// ***************************************************************************
+// Encoder and button
+// ***************************************************************************
+boolean isButtonPressed = false;
+long oldPosition = -999;
+long lastUpdateMillis = 0;
+int buttonCount = 0;
+void handleKey() {
+  isButtonPressed = true;
+}
+
+void handleEncoder()
+{
+  long newPosition = myEnc.read();
+  newPosition = newPosition * -1;//reverse the encoding
+
+  if (newPosition != oldPosition) {
+    oldPosition = newPosition;
+    Serial.print("Encoder at ");
+    Serial.println(newPosition);
+
+    if (newPosition >= 55)
+    {
+      newPosition = 0; //OFF
+      myEnc.write(0);
+    }
+
+    mode = static_cast<MODE>(newPosition);
+    strip.setMode(mode);
+    mode = HOLD;
+
+  }
+
+  // software debounce
+  if (isButtonPressed && millis() - lastUpdateMillis > 50)
+  {
+
+    isButtonPressed = false;
+    lastUpdateMillis = millis();
+    // Reset the counter
+    myEnc.write(0);
+    buttonCount++;
+    if (buttonCount > 2) buttonCount = 0;
+    Serial.print("reset ok, button count ");
+    Serial.println(buttonCount);
+
+    if (buttonCount == 1)
+    {
+      mode == OFF;
+      strip.setColor(0, 0, 0);
+      strip.setMode(FX_MODE_STATIC);
+    }
+    else
+    {
+      strip.setMode(FX_MODE_RAINBOW_CYCLE);
+      mode = HOLD;
+    }
+
+  }
+
+}
+#endif
+
 // ***************************************************************************
 // MAIN
 // ***************************************************************************
 void setup() {
   DBG_OUTPUT_PORT.begin(115200);
+
+  //pinMode(D3, INPUT_PULLUP);
+  //attachInterrupt(D3, handleKey, RISING);
+
   EEPROM.begin(512);
 
   // set builtin led pin as output
@@ -177,25 +260,25 @@ void setup() {
   // The extra parameters to be configured (can be either global or just in the setup)
   // After connecting, parameter.getValue() will get you the configured value
   // id/name placeholder/prompt default length
-  #ifdef ENABLE_MQTT
-    String settings_available = readEEPROM(134, 1);
-    if (settings_available == "1") {
-      readEEPROM(0, 64).toCharArray(mqtt_host, 64);   // 0-63
-      readEEPROM(64, 6).toCharArray(mqtt_port, 6);    // 64-69
-      readEEPROM(70, 32).toCharArray(mqtt_user, 32);  // 70-101
-      readEEPROM(102, 32).toCharArray(mqtt_pass, 32); // 102-133
-      DBG_OUTPUT_PORT.printf("MQTT host: %s\n", mqtt_host);
-      DBG_OUTPUT_PORT.printf("MQTT port: %s\n", mqtt_port);
-      DBG_OUTPUT_PORT.printf("MQTT user: %s\n", mqtt_user);
-      DBG_OUTPUT_PORT.printf("MQTT pass: %s\n", mqtt_pass);
-    }
-  
-    WiFiManagerParameter custom_mqtt_host("host", "MQTT hostname", mqtt_host, 64);
-    WiFiManagerParameter custom_mqtt_port("port", "MQTT port", mqtt_port, 6);
-    WiFiManagerParameter custom_mqtt_user("user", "MQTT user", mqtt_user, 32);
-    WiFiManagerParameter custom_mqtt_pass("pass", "MQTT pass", mqtt_pass, 32);
-  #endif
-  
+#ifdef ENABLE_MQTT
+  String settings_available = readEEPROM(134, 1);
+  if (settings_available == "1") {
+    readEEPROM(0, 64).toCharArray(mqtt_host, 64);   // 0-63
+    readEEPROM(64, 6).toCharArray(mqtt_port, 6);    // 64-69
+    readEEPROM(70, 32).toCharArray(mqtt_user, 32);  // 70-101
+    readEEPROM(102, 32).toCharArray(mqtt_pass, 32); // 102-133
+    DBG_OUTPUT_PORT.printf("MQTT host: %s\n", mqtt_host);
+    DBG_OUTPUT_PORT.printf("MQTT port: %s\n", mqtt_port);
+    DBG_OUTPUT_PORT.printf("MQTT user: %s\n", mqtt_user);
+    DBG_OUTPUT_PORT.printf("MQTT pass: %s\n", mqtt_pass);
+  }
+
+  WiFiManagerParameter custom_mqtt_host("host", "MQTT hostname", mqtt_host, 64);
+  WiFiManagerParameter custom_mqtt_port("port", "MQTT port", mqtt_port, 6);
+  WiFiManagerParameter custom_mqtt_user("user", "MQTT user", mqtt_user, 32);
+  WiFiManagerParameter custom_mqtt_pass("pass", "MQTT pass", mqtt_pass, 32);
+#endif
+
   //Local intialization. Once its business is done, there is no need to keep it around
   WiFiManager wifiManager;
   //reset settings - for testing
@@ -204,16 +287,16 @@ void setup() {
   //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
   wifiManager.setAPCallback(configModeCallback);
 
-  #ifdef ENABLE_MQTT
-    //set config save notify callback
-    wifiManager.setSaveConfigCallback(saveConfigCallback);
-  
-    //add all your parameters here
-    wifiManager.addParameter(&custom_mqtt_host);
-    wifiManager.addParameter(&custom_mqtt_port);
-    wifiManager.addParameter(&custom_mqtt_user);
-    wifiManager.addParameter(&custom_mqtt_pass);
-  #endif
+#ifdef ENABLE_MQTT
+  //set config save notify callback
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
+
+  //add all your parameters here
+  wifiManager.addParameter(&custom_mqtt_host);
+  wifiManager.addParameter(&custom_mqtt_port);
+  wifiManager.addParameter(&custom_mqtt_user);
+  wifiManager.addParameter(&custom_mqtt_pass);
+#endif
 
   //fetches ssid and pass and tries to connect
   //if it does not connect it starts an access point with the specified name
@@ -222,29 +305,34 @@ void setup() {
   if (!wifiManager.autoConnect(HOSTNAME)) {
     DBG_OUTPUT_PORT.println("failed to connect and hit timeout");
     //reset and try again, or maybe put it to deep sleep
-    ESP.reset();
+    #ifdef ESP8266
+      ESP.reset();
+    else
+      esp_wifi_wps_disable() // add this, okay
+      ESP.restart();
+    #endif
     delay(1000);
   }
 
-  #ifdef ENABLE_MQTT
-    //read updated parameters
-    strcpy(mqtt_host, custom_mqtt_host.getValue());
-    strcpy(mqtt_port, custom_mqtt_port.getValue());
-    strcpy(mqtt_user, custom_mqtt_user.getValue());
-    strcpy(mqtt_pass, custom_mqtt_pass.getValue());
+#ifdef ENABLE_MQTT
+  //read updated parameters
+  strcpy(mqtt_host, custom_mqtt_host.getValue());
+  strcpy(mqtt_port, custom_mqtt_port.getValue());
+  strcpy(mqtt_user, custom_mqtt_user.getValue());
+  strcpy(mqtt_pass, custom_mqtt_pass.getValue());
 
-    //save the custom parameters to FS
-    if (shouldSaveConfig) {
-      DBG_OUTPUT_PORT.println("Saving WiFiManager config");
+  //save the custom parameters to FS
+  if (shouldSaveConfig) {
+    DBG_OUTPUT_PORT.println("Saving WiFiManager config");
 
-      writeEEPROM(0, 64, mqtt_host);   // 0-63
-      writeEEPROM(64, 6, mqtt_port);   // 64-69
-      writeEEPROM(70, 32, mqtt_user);  // 70-101
-      writeEEPROM(102, 32, mqtt_pass); // 102-133
-      writeEEPROM(134, 1, "1");        // 134 --> always "1"
-      EEPROM.commit();
-    }
-  #endif
+    writeEEPROM(0, 64, mqtt_host);   // 0-63
+    writeEEPROM(64, 6, mqtt_port);   // 64-69
+    writeEEPROM(70, 32, mqtt_user);  // 70-101
+    writeEEPROM(102, 32, mqtt_pass); // 102-133
+    writeEEPROM(134, 1, "1");        // 134 --> always "1"
+    EEPROM.commit();
+  }
+#endif
 
   //if you get here you have connected to the WiFi
   DBG_OUTPUT_PORT.println("connected...yeey :)");
@@ -256,59 +344,59 @@ void setup() {
   // ***************************************************************************
   // Configure OTA
   // ***************************************************************************
-  #ifdef ENABLE_OTA
-    DBG_OUTPUT_PORT.println("Arduino OTA activated.");
-    
-    // Port defaults to 8266
-    ArduinoOTA.setPort(8266);
-  
-    // Hostname defaults to esp8266-[ChipID]
-    ArduinoOTA.setHostname(HOSTNAME);
-  
-    // No authentication by default
-    // ArduinoOTA.setPassword("admin");
-  
-    // Password can be set with it's md5 value as well
-    // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-    // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-  
-    ArduinoOTA.onStart([]() {
-      DBG_OUTPUT_PORT.println("Arduino OTA: Start updating");
-    });
-    ArduinoOTA.onEnd([]() {
-      DBG_OUTPUT_PORT.println("Arduino OTA: End");
-    });
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-      DBG_OUTPUT_PORT.printf("Arduino OTA Progress: %u%%\r", (progress / (total / 100)));
-    });
-    ArduinoOTA.onError([](ota_error_t error) {
-      DBG_OUTPUT_PORT.printf("Arduino OTA Error[%u]: ", error);
-      if (error == OTA_AUTH_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: Auth Failed");
-      else if (error == OTA_BEGIN_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: Begin Failed");
-      else if (error == OTA_CONNECT_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: Connect Failed");
-      else if (error == OTA_RECEIVE_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: Receive Failed");
-      else if (error == OTA_END_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: End Failed");
-    });
-  
-    ArduinoOTA.begin();
-    DBG_OUTPUT_PORT.println("");
-  #endif
+#ifdef ENABLE_OTA
+  DBG_OUTPUT_PORT.println("Arduino OTA activated.");
+
+  // Port defaults to 8266
+  ArduinoOTA.setPort(8266);
+
+  // Hostname defaults to esp8266-[ChipID]
+  ArduinoOTA.setHostname(HOSTNAME);
+
+  // No authentication by default
+  // ArduinoOTA.setPassword("admin");
+
+  // Password can be set with it's md5 value as well
+  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
+  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
+
+  ArduinoOTA.onStart([]() {
+    DBG_OUTPUT_PORT.println("Arduino OTA: Start updating");
+  });
+  ArduinoOTA.onEnd([]() {
+    DBG_OUTPUT_PORT.println("Arduino OTA: End");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    DBG_OUTPUT_PORT.printf("Arduino OTA Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    DBG_OUTPUT_PORT.printf("Arduino OTA Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: Receive Failed");
+    else if (error == OTA_END_ERROR) DBG_OUTPUT_PORT.println("Arduino OTA: End Failed");
+  });
+
+  ArduinoOTA.begin();
+  DBG_OUTPUT_PORT.println("");
+#endif
 
 
   // ***************************************************************************
   // Configure MQTT
   // ***************************************************************************
-  #ifdef ENABLE_MQTT
-    if (mqtt_host != "" && String(mqtt_port).toInt() > 0) {
-      snprintf(mqtt_intopic, sizeof mqtt_intopic, "%s/in", HOSTNAME);
-      snprintf(mqtt_outtopic, sizeof mqtt_outtopic, "%s/out", HOSTNAME);
-  
-      DBG_OUTPUT_PORT.printf("MQTT active: %s:%d\n", mqtt_host, String(mqtt_port).toInt());
-      
-      mqtt_client.setServer(mqtt_host, String(mqtt_port).toInt());
-      mqtt_client.setCallback(mqtt_callback);
-    }
-  #endif
+#ifdef ENABLE_MQTT
+  if (mqtt_host != "" && String(mqtt_port).toInt() > 0) {
+    snprintf(mqtt_intopic, sizeof mqtt_intopic, "%s/in", HOSTNAME);
+    snprintf(mqtt_outtopic, sizeof mqtt_outtopic, "%s/out", HOSTNAME);
+
+    DBG_OUTPUT_PORT.printf("MQTT active: %s:%d\n", mqtt_host, String(mqtt_port).toInt());
+
+    mqtt_client.setServer(mqtt_host, String(mqtt_port).toInt());
+    mqtt_client.setCallback(mqtt_callback);
+  }
+#endif
 
 
   // ***************************************************************************
@@ -325,10 +413,10 @@ void setup() {
 
   DBG_OUTPUT_PORT.print("New users: Open http://");
   DBG_OUTPUT_PORT.print(WiFi.localIP());
-  DBG_OUTPUT_PORT.println("/upload to upload the webpages first.");  
+  DBG_OUTPUT_PORT.println("/upload to upload the webpages first.");
 
   DBG_OUTPUT_PORT.println("");
-  
+
 
   // ***************************************************************************
   // Setup: WebSocket server
@@ -336,7 +424,7 @@ void setup() {
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
 
-
+#ifdef ESP8266
   // ***************************************************************************
   // Setup: SPIFFS
   // ***************************************************************************
@@ -353,6 +441,10 @@ void setup() {
     SPIFFS.info(fs_info);
     DBG_OUTPUT_PORT.printf("FS Usage: %d/%d bytes\n\n", fs_info.usedBytes, fs_info.totalBytes);
   }
+#else
+    listDir(SPIFFS, "/", 0);
+#endif
+
 
   // ***************************************************************************
   // Setup: SPIFFS Webserver handler
@@ -445,14 +537,14 @@ void setup() {
     DBG_OUTPUT_PORT.print("/get_brightness: ");
     DBG_OUTPUT_PORT.println(str_brightness);
   });
-  
+
   server.on("/set_speed", []() {
     if (server.arg("d").toInt() >= 0) {
       ws2812fx_speed = server.arg("d").toInt();
       ws2812fx_speed = constrain(ws2812fx_speed, 0, 255);
       strip.setSpeed(ws2812fx_speed);
     }
-    
+
     getStatusJSON();
   });
 
@@ -552,21 +644,23 @@ void setup() {
 void loop() {
   server.handleClient();
   webSocket.loop();
-  
-  #ifdef ENABLE_OTA
-    ArduinoOTA.handle();
-  #endif
 
-  #ifdef ENABLE_MQTT
-    if (mqtt_host != "" && String(mqtt_port).toInt() > 0 && mqtt_reconnect_retries < MQTT_MAX_RECONNECT_TRIES) {
-      if (!mqtt_client.connected()) {
-        mqtt_reconnect(); 
-      } else {
-        mqtt_client.loop();
-      }
+#ifdef ENABLE_OTA
+  ArduinoOTA.handle();
+#endif
+
+#ifdef ENABLE_MQTT
+  if (mqtt_host != "" && String(mqtt_port).toInt() > 0 && mqtt_reconnect_retries < MQTT_MAX_RECONNECT_TRIES) {
+    if (!mqtt_client.connected()) {
+      mqtt_reconnect();
+    } else {
+      mqtt_client.loop();
     }
-  #endif
-  
+  }
+#endif
+
+  //handleEncoder();
+
   // Simple statemachine that handles the different modes
   if (mode == SET_MODE) {
     DBG_OUTPUT_PORT.printf("SET_MODE: %d %d\n", ws2812fx_mode, mode);
@@ -574,7 +668,7 @@ void loop() {
     mode = HOLD;
   }
   if (mode == OFF) {
-    strip.setColor(0,0,0);
+    strip.setColor(0, 0, 0);
     strip.setMode(FX_MODE_STATIC);
     // mode = HOLD;
   }
